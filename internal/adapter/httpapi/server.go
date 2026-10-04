@@ -16,6 +16,7 @@ import (
 // Reporter is what the API needs from the watcher.
 type Reporter interface {
 	Reports() []app.Report
+	VaultReports() []app.VaultReport
 	Ready() bool
 }
 
@@ -46,6 +47,9 @@ func NewHandler(reporter Reporter, gatherer prometheus.Gatherer) http.Handler {
 	})
 	mux.HandleFunc("GET /v1/accounts", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"accounts": reporter.Reports()})
+	})
+	mux.HandleFunc("GET /v1/vaults", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"vaults": reporter.VaultReports()})
 	})
 	mux.Handle("GET /metrics", promhttp.HandlerFor(gatherer, promhttp.HandlerOpts{}))
 	return mux

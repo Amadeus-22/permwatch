@@ -1,8 +1,10 @@
-// Package config reads permwatch's configuration once, at startup, from
-// environment variables. Every variable is documented in the README.
+// Package config reads permwatch's configuration once, at startup: process
+// settings from environment variables and, optionally, the watch list from a
+// YAML file decoded strictly. Every variable is documented in the README.
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -10,49 +12,88 @@ import (
 	"strings"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
+	"github.com/Amadeus-22/permwatch/internal/app"
 	"github.com/Amadeus-22/permwatch/internal/domain"
 )
 
 // Config is the validated process configuration.
 type Config struct {
-	Addresses       []domain.Address
-	APIURL          string
-	APITimeout      time.Duration
-	PollInterval    time.Duration
-	HTTPAddr        string
-	StateDir        string
-	WebhookURL      string
-	LogLevel        slog.Level
-	ShutdownTimeout time.Duration
+	Accounts         []app.Watched
+	Vaults           []app.WatchedVault
+	APIURL           string
+	NodeURL          string
+	APITimeout       time.Duration
+	PollInterval     time.Duration
+	HTTPAddr         string
+	StateDir         string
+	WebhookURL       string
+	TelegramBotToken string
+	TelegramChatID   string
+	LogLevel         slog.Level
+	ShutdownTimeout  time.Duration
 }
 
-// DefaultAPIURL is KleverChain mainnet.
-const DefaultAPIURL = "https://api.mainnet.klever.org"
+// Defaults point at KleverChain mainnet.
+const (
+	DefaultAPIURL      = "https://api.mainnet.klever.org"
+	DefaultNodeURL     = "https://node.mainnet.klever.org"
+	DefaultWarnPercent = 80
+)
 
-// Load parses and validates the configuration. getenv is os.Getenv in
-// production and a map lookup in tests. Every problem is reported at once.
-func Load(getenv func(string) string) (Config, error) {
+// Load parses and validates the configuration. getenv is os.Getenv and readFile
+// is os.ReadFile in production; tests pass fakes. Every problem is reported at once.
+func Load(getenv func(string) string, readFile func(string) ([]byte, error)) (Config, error) {
 	var errs []error
 	cfg := Config{
-		APIURL:     value(getenv, "PERMWATCH_API_URL", DefaultAPIURL),
-		HTTPAddr:   value(getenv, "PERMWATCH_HTTP_ADDR", ":8080"),
-		StateDir:   value(getenv, "PERMWATCH_STATE_DIR", "./data"),
-		WebhookURL: getenv("PERMWATCH_WEBHOOK_URL"),
+		APIURL:           value(getenv, "PERMWATCH_API_URL", DefaultAPIURL),
+		NodeURL:          value(getenv, "PERMWATCH_NODE_URL", DefaultNodeURL),
+		HTTPAddr:         value(getenv, "PERMWATCH_HTTP_ADDR", ":8080"),
+		StateDir:         value(getenv, "PERMWATCH_STATE_DIR", "./data"),
+		WebhookURL:       strings.TrimSpace(getenv("PERMWATCH_WEBHOOK_URL")),
+		TelegramBotToken: strings.TrimSpace(getenv("PERMWATCH_TELEGRAM_BOT_TOKEN")),
+		TelegramChatID:   strings.TrimSpace(getenv("PERMWATCH_TELEGRAM_CHAT_ID")),
 	}
 
-	addresses, err := ParseAddresses(getenv("PERMWATCH_ADDRESSES"))
-	if err != nil {
-		errs = append(errs, fmt.Errorf("PERMWATCH_ADDRESSES: %w", err))
+	list := strings.TrimSpace(getenv("PERMWATCH_ADDRESSES"))
+	file := strings.TrimSpace(getenv("PERMWATCH_CONFIG_FILE"))
+	switch {
+	case list != "" && file != "":
+		errs = append(errs, errors.New("set PERMWATCH_ADDRESSES or PERMWATCH_CONFIG_FILE, not both"))
+	case file != "":
+		raw, err := readFile(file)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("PERMWATCH_CONFIG_FILE: %w", err))
+			break
+		}
+		accounts, vaults, err := ParseWatchList(raw)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("PERMWATCH_CONFIG_FILE %s: %w", file, err))
+		}
+		cfg.Accounts, cfg.Vaults = accounts, vaults
+	default:
+		addresses, err := ParseAddresses(list)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("PERMWATCH_ADDRESSES: %w", err))
+		}
+		for _, addr := range addresses {
+			cfg.Accounts = append(cfg.Accounts, app.Watched{Address: addr})
+		}
 	}
-	cfg.Addresses = addresses
 
-	if err := checkURL(cfg.APIURL); err != nil {
-		errs = append(errs, fmt.Errorf("PERMWATCH_API_URL: %w", err))
+	for name, raw := range map[string]string{"PERMWATCH_API_URL": cfg.APIURL, "PERMWATCH_NODE_URL": cfg.NodeURL} {
+		if err := checkURL(raw); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", name, err))
+		}
 	}
 	if cfg.WebhookURL != "" {
 		if err := checkURL(cfg.WebhookURL); err != nil {
 			errs = append(errs, fmt.Errorf("PERMWATCH_WEBHOOK_URL: %w", err))
 		}
+	}
+	if (cfg.TelegramBotToken == "") != (cfg.TelegramChatID == "") {
+		errs = append(errs, errors.New("PERMWATCH_TELEGRAM_BOT_TOKEN and PERMWATCH_TELEGRAM_CHAT_ID must be set together"))
 	}
 
 	durations := []struct {
@@ -102,6 +143,78 @@ func ParseAddresses(list string) ([]domain.Address, error) {
 		return nil, errors.New("at least one address is required")
 	}
 	return out, nil
+}
+
+type watchListFile struct {
+	Accounts []struct {
+		Address string `yaml:"address"`
+		Label   string `yaml:"label"`
+		Owner   string `yaml:"owner"`
+	} `yaml:"accounts"`
+	Vaults []struct {
+		Contract    string `yaml:"contract"`
+		Label       string `yaml:"label"`
+		Owner       string `yaml:"owner"`
+		WarnPercent *int   `yaml:"warn_percent"`
+	} `yaml:"vaults"`
+}
+
+// ParseWatchList decodes the YAML watch list. Unknown keys are errors, so a
+// typo cannot silently drop a setting. Every problem is reported at once.
+func ParseWatchList(raw []byte) ([]app.Watched, []app.WatchedVault, error) {
+	var file watchListFile
+	decoder := yaml.NewDecoder(bytes.NewReader(raw))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&file); err != nil {
+		return nil, nil, fmt.Errorf("decode: %w", err)
+	}
+
+	var errs []error
+	var accounts []app.Watched
+	var vaults []app.WatchedVault
+	seen := map[domain.Address]bool{}
+
+	for i, a := range file.Accounts {
+		addr, err := domain.ParseAddress(a.Address)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("accounts[%d]: %w", i, err))
+			continue
+		}
+		if seen[addr] {
+			errs = append(errs, fmt.Errorf("accounts[%d]: %s listed twice", i, addr))
+			continue
+		}
+		seen[addr] = true
+		accounts = append(accounts, app.Watched{Address: addr, Label: strings.TrimSpace(a.Label), Owner: strings.TrimSpace(a.Owner)})
+	}
+
+	seen = map[domain.Address]bool{}
+	for i, v := range file.Vaults {
+		contract, err := domain.ParseAddress(v.Contract)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("vaults[%d]: %w", i, err))
+			continue
+		}
+		if seen[contract] {
+			errs = append(errs, fmt.Errorf("vaults[%d]: %s listed twice", i, contract))
+			continue
+		}
+		seen[contract] = true
+		warn := DefaultWarnPercent
+		if v.WarnPercent != nil {
+			warn = *v.WarnPercent
+		}
+		if warn < 1 || warn > 100 {
+			errs = append(errs, fmt.Errorf("vaults[%d]: warn_percent must be between 1 and 100, got %d", i, warn))
+			continue
+		}
+		vaults = append(vaults, app.WatchedVault{Contract: contract, Label: strings.TrimSpace(v.Label), Owner: strings.TrimSpace(v.Owner), WarnPercent: warn})
+	}
+
+	if len(file.Accounts) == 0 && len(file.Vaults) == 0 {
+		errs = append(errs, errors.New("the file lists no accounts and no vaults"))
+	}
+	return accounts, vaults, errors.Join(errs...)
 }
 
 func value(getenv func(string) string, name, fallback string) string {

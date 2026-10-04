@@ -14,6 +14,8 @@ type Metrics struct {
 	Changes     *prometheus.CounterVec // label: kind
 	Findings    *prometheus.GaugeVec   // labels: address, severity
 	LastSuccess *prometheus.GaugeVec   // label: address
+	VaultChecks *prometheus.CounterVec // label: result (ok, error)
+	VaultUsed   *prometheus.GaugeVec   // label: contract
 }
 
 var severities = []domain.Severity{domain.Critical, domain.High, domain.Low}
@@ -39,7 +41,15 @@ func New(reg prometheus.Registerer) *Metrics {
 			Help: "Unix time of the last successful check of the account.",
 		}, []string{"address"}),
 	}
-	reg.MustRegister(m.Polls, m.Changes, m.Findings, m.LastSuccess)
+	m.VaultChecks = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "permwatch_vault_checks_total",
+		Help: "Vault checks, by result.",
+	}, []string{"result"})
+	m.VaultUsed = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "permwatch_vault_used_percent",
+		Help: "Share of the vault's limit withdrawn in the current period, as of the last check.",
+	}, []string{"contract"})
+	reg.MustRegister(m.Polls, m.Changes, m.Findings, m.LastSuccess, m.VaultChecks, m.VaultUsed)
 	return m
 }
 
@@ -69,4 +79,14 @@ func (m *Metrics) Assessed(addr domain.Address, findings []domain.Finding) {
 	for _, s := range severities {
 		m.Findings.WithLabelValues(string(addr), string(s)).Set(float64(counts[s]))
 	}
+}
+
+// VaultChecked counts one vault check and records the usage on success.
+func (m *Metrics) VaultChecked(contract domain.Address, usedPercent int, err error) {
+	if err != nil {
+		m.VaultChecks.WithLabelValues("error").Inc()
+		return
+	}
+	m.VaultChecks.WithLabelValues("ok").Inc()
+	m.VaultUsed.WithLabelValues(string(contract)).Set(float64(usedPercent))
 }

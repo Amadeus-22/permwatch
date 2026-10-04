@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"math/big"
 	"reflect"
 	"testing"
 	"time"
@@ -59,8 +60,9 @@ func (f *fakeNotifier) Notify(_ context.Context, a Alert) error {
 }
 
 type fakeObserver struct {
-	failures int
-	changes  []string
+	failures  int
+	changes   []string
+	vaultUsed []int
 }
 
 func (f *fakeObserver) Polled(_ domain.Address, err error) {
@@ -77,6 +79,26 @@ func (f *fakeObserver) Changed(_ domain.Address, changes []domain.Change) {
 
 func (f *fakeObserver) Assessed(domain.Address, []domain.Finding) {}
 
+func (f *fakeObserver) VaultChecked(_ domain.Address, used int, err error) {
+	if err != nil {
+		f.failures++
+		return
+	}
+	f.vaultUsed = append(f.vaultUsed, used)
+}
+
+type fakeVaultSource struct {
+	spent int64
+	err   error
+}
+
+func (f *fakeVaultSource) VaultStatus(_ context.Context, contract domain.Address) (domain.VaultStatus, error) {
+	if f.err != nil {
+		return domain.VaultStatus{}, f.err
+	}
+	return domain.VaultStatus{Contract: contract, Limit: big.NewInt(100), Spent: big.NewInt(f.spent), Remaining: big.NewInt(100 - f.spent)}, nil
+}
+
 func transferPermission(threshold int64) domain.Permission {
 	return domain.Permission{ID: 0, Type: domain.User, Name: "ops", Threshold: threshold,
 		Operations: domain.Operations{0x01}, Signers: []domain.Signer{{Address: signer, Weight: 1}}}
@@ -85,10 +107,10 @@ func transferPermission(threshold int64) domain.Permission {
 func newWatcher(src *fakeSource, store *fakeStore, notifier *fakeNotifier, obs *fakeObserver) *Watcher {
 	return &Watcher{
 		Source: src, Store: store, Notifier: notifier, Observer: obs,
-		Log:       slog.New(slog.NewJSONHandler(io.Discard, nil)),
-		Addresses: []domain.Address{acct},
-		Interval:  time.Hour,
-		Now:       func() time.Time { return time.Unix(1_790_000_000, 0).UTC() },
+		Log:      slog.New(slog.NewJSONHandler(io.Discard, nil)),
+		Accounts: []Watched{{Address: acct, Label: "treasury", Owner: "finance"}},
+		Interval: time.Hour,
+		Now:      func() time.Time { return time.Unix(1_790_000_000, 0).UTC() },
 	}
 }
 
@@ -133,6 +155,9 @@ func TestWatcherAlertsOnceWhenPermissionsChange(t *testing.T) {
 	alert := notifier.alerts[0]
 	if alert.Address != acct || len(alert.Changes) != 1 || alert.Changes[0].Kind != domain.ChangePermissionAdded {
 		t.Fatalf("alert = %+v", alert)
+	}
+	if alert.Kind != AlertPermissionsChanged || alert.Label != "treasury" || alert.Owner != "finance" {
+		t.Fatalf("alert kind/label/owner = %q %q %q", alert.Kind, alert.Label, alert.Owner)
 	}
 	if len(alert.Findings) != 1 {
 		t.Fatalf("alert carries %d findings, want 1", len(alert.Findings))
@@ -190,5 +215,93 @@ func TestRunStopsWhenContextIsCancelled(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run did not stop")
+	}
+}
+
+const vaultAddr domain.Address = "klv1qqqqqqqqqqqqqpgqprrwnlul05prr753xm278kq6jexa0a523vqq5gvgsc"
+
+func newVaultWatcher(src *fakeVaultSource, notifier *fakeNotifier, obs *fakeObserver) *Watcher {
+	w := newWatcher(&fakeSource{}, &fakeStore{}, notifier, obs)
+	w.Accounts = nil
+	w.VaultSource = src
+	w.Vaults = []WatchedVault{{Contract: vaultAddr, Label: "ops vault", Owner: "ops", WarnPercent: 80}}
+	return w
+}
+
+func TestWatcherAlertsOncePerVaultLevel(t *testing.T) {
+	src := &fakeVaultSource{spent: 40}
+	notifier, obs := &fakeNotifier{}, &fakeObserver{}
+	w := newVaultWatcher(src, notifier, obs)
+	ctx := context.Background()
+
+	w.Cycle(ctx) // 40%: below the line
+	if len(notifier.alerts) != 0 {
+		t.Fatalf("alerted at 40%%: %+v", notifier.alerts)
+	}
+
+	src.spent = 85
+	w.Cycle(ctx) // crosses the warning line
+	w.Cycle(ctx) // same level: no repeat
+	if len(notifier.alerts) != 1 {
+		t.Fatalf("alerts after crossing the line = %d, want 1", len(notifier.alerts))
+	}
+	first := notifier.alerts[0]
+	if first.Kind != AlertVaultNearLimit || first.Address != vaultAddr || first.Label != "ops vault" || first.Owner != "ops" {
+		t.Fatalf("alert = %+v", first)
+	}
+	if first.Vault == nil || first.Vault.UsedPercent != 85 || first.Vault.Warnings[0].Severity != domain.Low {
+		t.Fatalf("alert vault = %+v", first.Vault)
+	}
+
+	src.spent = 100
+	w.Cycle(ctx) // limit reached: escalation
+	if len(notifier.alerts) != 2 || notifier.alerts[1].Vault.Warnings[0].Severity != domain.High {
+		t.Fatalf("alerts after reaching the limit = %+v", notifier.alerts)
+	}
+
+	src.spent = 0
+	w.Cycle(ctx) // new period: clears silently
+	src.spent = 90
+	w.Cycle(ctx) // crosses the line again in the new period
+	if len(notifier.alerts) != 3 {
+		t.Fatalf("alerts in the new period = %d, want 3", len(notifier.alerts))
+	}
+
+	if !reflect.DeepEqual(obs.vaultUsed, []int{40, 85, 85, 100, 0, 90}) {
+		t.Fatalf("observed usage = %v", obs.vaultUsed)
+	}
+	if reports := w.VaultReports(); len(reports) != 1 || reports[0].UsedPercent != 90 || reports[0].Label != "ops vault" {
+		t.Fatalf("vault reports = %+v", reports)
+	}
+}
+
+func TestWatcherRetriesVaultAlertWhenNotifierFails(t *testing.T) {
+	src := &fakeVaultSource{spent: 95}
+	notifier, obs := &fakeNotifier{err: errors.New("telegram down")}, &fakeObserver{}
+	w := newVaultWatcher(src, notifier, obs)
+
+	w.Cycle(context.Background())
+	if obs.failures != 1 {
+		t.Fatalf("failures = %d, want 1", obs.failures)
+	}
+	notifier.err = nil
+	w.Cycle(context.Background())
+	w.Cycle(context.Background())
+	if len(notifier.alerts) != 1 {
+		t.Fatalf("alerts after recovery = %d, want 1", len(notifier.alerts))
+	}
+}
+
+func TestWatcherVaultSourceErrorIsCounted(t *testing.T) {
+	src := &fakeVaultSource{err: errors.New("node unreachable")}
+	notifier, obs := &fakeNotifier{}, &fakeObserver{}
+	w := newVaultWatcher(src, notifier, obs)
+
+	w.Cycle(context.Background())
+	if obs.failures != 1 || len(notifier.alerts) != 0 || len(w.VaultReports()) != 0 {
+		t.Fatalf("failures=%d alerts=%d reports=%d", obs.failures, len(notifier.alerts), len(w.VaultReports()))
+	}
+	if !w.Ready() {
+		t.Fatal("a failing vault must not keep the watcher from becoming ready")
 	}
 }

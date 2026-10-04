@@ -19,11 +19,17 @@ import (
 // Log writes every alert to the structured log.
 type Log struct{ Logger *slog.Logger }
 
-// Notify logs one line per change.
+// Notify logs one line per change, or one line for a vault alert.
 func (l Log) Notify(_ context.Context, alert app.Alert) error {
 	for _, c := range alert.Changes {
-		l.Logger.Warn("permissions changed", "address", string(alert.Address),
+		l.Logger.Warn("permissions changed", "address", string(alert.Address), "label", alert.Label,
 			"kind", c.Kind, "permission_id", c.PermissionID, "detail", c.Message)
+	}
+	if alert.Vault != nil {
+		for _, w := range alert.Vault.Warnings {
+			l.Logger.Warn("vault near limit", "contract", string(alert.Address), "label", alert.Label,
+				"severity", string(w.Severity), "used_percent", alert.Vault.UsedPercent, "detail", w.Message)
+		}
 	}
 	return nil
 }

@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,10 +18,12 @@ import (
 type fakeReporter struct {
 	ready   bool
 	reports []app.Report
+	vaults  []app.VaultReport
 }
 
-func (f fakeReporter) Reports() []app.Report { return f.reports }
-func (f fakeReporter) Ready() bool           { return f.ready }
+func (f fakeReporter) Reports() []app.Report           { return f.reports }
+func (f fakeReporter) VaultReports() []app.VaultReport { return f.vaults }
+func (f fakeReporter) Ready() bool                     { return f.ready }
 
 const addr domain.Address = "klv1uah7ye2sq6vdnlksf6v3q5mtp2yf87352ghy8hve2khxjjcu3vqqaycqgs"
 
@@ -74,12 +77,30 @@ func TestAccountsReturnsReports(t *testing.T) {
 	}
 }
 
+func TestVaultsReturnsReportsWithExactAmounts(t *testing.T) {
+	status := domain.VaultStatus{Contract: addr, Limit: big.NewInt(10_000_000), Spent: big.NewInt(9_000_000), Remaining: big.NewInt(1_000_000)}
+	reporter := fakeReporter{vaults: []app.VaultReport{{
+		Status: status, Label: "ops vault", UsedPercent: status.UsedPercent(), Warnings: status.Warnings(80),
+	}}}
+
+	rec := get(t, NewHandler(reporter, prometheus.NewRegistry()), "/v1/vaults")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d", rec.Code)
+	}
+	for _, want := range []string{`"limit":"10000000"`, `"spent":"9000000"`, `"used_percent":90`, `"label":"ops vault"`, `"rule":"vault_near_limit"`} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Errorf("body is missing %s: %s", want, rec.Body)
+		}
+	}
+}
+
 func TestMetricsExposeFindings(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m := metrics.New(reg)
 	m.Polled(addr, nil)
 	m.Assessed(addr, []domain.Finding{{Rule: domain.RuleSingleSignerFunds, Severity: domain.High}})
 	m.Changed(addr, []domain.Change{{Kind: domain.ChangeSignerAdded}})
+	m.VaultChecked(addr, 90, nil)
 
 	body := get(t, NewHandler(fakeReporter{}, reg), "/metrics").Body.String()
 	for _, want := range []string{
@@ -87,6 +108,8 @@ func TestMetricsExposeFindings(t *testing.T) {
 		`permwatch_findings{address="` + string(addr) + `",severity="high"} 1`,
 		`permwatch_findings{address="` + string(addr) + `",severity="critical"} 0`,
 		`permwatch_changes_total{kind="signer_added"} 1`,
+		`permwatch_vault_checks_total{result="ok"} 1`,
+		`permwatch_vault_used_percent{contract="` + string(addr) + `"} 90`,
 		`permwatch_last_success_timestamp_seconds{address="` + string(addr) + `"}`,
 	} {
 		if !strings.Contains(body, want) {

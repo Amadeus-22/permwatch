@@ -28,9 +28,11 @@ the dangerous combinations, and alerts the moment they change.
   ([klever-contracts/vault](https://github.com/Amadeus-22/klever-contracts)) and
   reports how much of the current period's allowance is used. Exits `2` once the
   warning line (`-warn`, default 80%) is reached.
-- **`permwatch watch`** — long-running service: polls a list of accounts, keeps the
-  last permissions seen on disk, and when they change sends an alert (log and
-  optional webhook) listing what changed and what the new state allows.
+- **`permwatch watch`** — long-running service: polls a list of accounts and
+  vaults. For accounts it keeps the last permissions seen on disk and alerts when
+  they change, listing what changed and what the new state allows. For vaults it
+  alerts when spending crosses the warning line and again when the limit is
+  reached. Alerts go to the log and, if configured, to a webhook and to Telegram.
 
 ### Rules
 
@@ -88,12 +90,28 @@ klv1x4lhywvzqt4dhz92tps2a2jfrsn2qljz7c89njver2e6nmamkjhq62e787
   [high] single_signer_moves_funds: permission "treasury" lets klv1uah7ye2sq6vdnlksf6v3q5mtp2yf87352ghy8hve2khxjjcu3vqqaycqgs move value alone, with no second signature (Transfer)
 ```
 
-Watch accounts:
+Watch accounts and vaults:
 
 ```bash
-cp .env.example .env      # set PERMWATCH_ADDRESSES
+cp .env.example .env      # set PERMWATCH_ADDRESSES, or PERMWATCH_CONFIG_FILE
 make run                  # or: docker compose -f deploy/docker-compose.yml up --build
 curl localhost:8080/v1/accounts
+curl localhost:8080/v1/vaults
+```
+
+With a watch list file ([permwatch.example.yaml](permwatch.example.yaml)) each
+target gets a label and an owner, which appear in alerts, logs and the API:
+
+```yaml
+accounts:
+  - address: klv1x4lhywvzqt4dhz92tps2a2jfrsn2qljz7c89njver2e6nmamkjhq62e787
+    label: demo treasury
+    owner: finance team
+vaults:
+  - contract: klv1qqqqqqqqqqqqqpgqprrwnlul05prr753xm278kq6jexa0a523vqq5gvgsc
+    label: ops vault
+    owner: ops team
+    warn_percent: 80
 ```
 
 `audit` flags: `-api URL` (default mainnet), `-json`, `-timeout 10s`.
@@ -123,13 +141,16 @@ problem is reported at once.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `PERMWATCH_ADDRESSES` | — (required) | Comma-separated `klv1…` addresses to watch. |
-| `PERMWATCH_API_URL` | `https://api.mainnet.klever.org` | KleverChain API. Testnet: `https://api.testnet.klever.org`. |
-| `PERMWATCH_API_TIMEOUT` | `10s` | Timeout of each API and webhook request. |
-| `PERMWATCH_POLL_INTERVAL` | `1m` | Time between checks of the account list. |
+| `PERMWATCH_ADDRESSES` | — | Comma-separated `klv1…` addresses to watch. Set this or `PERMWATCH_CONFIG_FILE`, not both. |
+| `PERMWATCH_CONFIG_FILE` | — | YAML watch list with accounts and vaults, each with an optional `label` and `owner`; vaults take `warn_percent` (1–100, default 80). Unknown keys are errors. |
+| `PERMWATCH_API_URL` | `https://api.mainnet.klever.org` | KleverChain API, used for accounts. Testnet: `https://api.testnet.klever.org`. |
+| `PERMWATCH_NODE_URL` | `https://node.mainnet.klever.org` | KleverChain node, used for vaults. Testnet: `https://node.testnet.klever.org`. |
+| `PERMWATCH_API_TIMEOUT` | `10s` | Timeout of each API, node, webhook and Telegram request. |
+| `PERMWATCH_POLL_INTERVAL` | `1m` | Time between checks of the watch list. |
 | `PERMWATCH_HTTP_ADDR` | `:8080` | Listen address of the HTTP API. |
 | `PERMWATCH_STATE_DIR` | `./data` | Directory of the per-account snapshots. |
 | `PERMWATCH_WEBHOOK_URL` | — | If set, alerts are POSTed here as JSON. |
+| `PERMWATCH_TELEGRAM_BOT_TOKEN`, `PERMWATCH_TELEGRAM_CHAT_ID` | — | If both are set, alerts are sent as messages by that bot to that chat. The token is never written to the log. |
 | `PERMWATCH_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`. |
 | `PERMWATCH_SHUTDOWN_TIMEOUT` | `10s` | Grace period for in-flight HTTP requests on shutdown. |
 
@@ -138,17 +159,21 @@ problem is reported at once.
 | Endpoint | Returns |
 |---|---|
 | `GET /v1/accounts` | Latest report of each watched account: permissions, findings, `checked_at`. |
+| `GET /v1/vaults` | Latest report of each watched vault: limit, spent and remaining (decimal strings), `used_percent`, warnings. |
 | `GET /healthz` | `200` while the process is alive. |
-| `GET /readyz` | `200` once the first pass over the account list has finished; `503` before. |
+| `GET /readyz` | `200` once the first pass over the watch list has finished; `503` before. |
 | `GET /metrics` | Prometheus metrics. |
 
 Errors are `{"error":{"code":"snake_case","message":"..."}}`.
 
-Webhook body:
+Webhook body for a permissions change (`label` and `owner` appear when set):
 
 ```json
 {
+  "kind": "permissions_changed",
   "address": "klv1x4lh…",
+  "label": "demo treasury",
+  "owner": "finance team",
   "changes": [{"kind": "permission_added", "permission_id": 0,
                "message": "user permission \"treasury\" added with 1 signer(s), threshold 1"}],
   "findings": [{"rule": "single_signer_moves_funds", "severity": "high", "permission_id": 0,
@@ -157,8 +182,20 @@ Webhook body:
 }
 ```
 
-A webhook answer outside `2xx` leaves the stored snapshot untouched, so the same
-change is detected and sent again on the next cycle.
+For a vault, `kind` is `vault_near_limit` and `vault` holds the report served by
+`/v1/vaults`. A vault alerts when its level rises — once at the warning line,
+once at the limit — and resets silently when a new period starts.
+
+A webhook or Telegram answer outside `2xx` leaves the stored state untouched, so
+the same alert is sent again on the next cycle. The Telegram message is plain text:
+
+```
+Permissions changed: demo treasury (klv1x4lh…)
+- user permission "treasury" added with 1 signer(s), threshold 1
+What the account allows now:
+[HIGH] permission "treasury" lets klv1uah7… move value alone, with no second signature (Transfer)
+Owner: finance team
+```
 
 ## Metrics
 
@@ -168,6 +205,8 @@ change is detected and sent again on the next cycle.
 | `permwatch_changes_total` | counter | `kind` | Permission changes detected. |
 | `permwatch_findings` | gauge | `address`, `severity` | Open findings as of the last check. |
 | `permwatch_last_success_timestamp_seconds` | gauge | `address` | Unix time of the last successful check. |
+| `permwatch_vault_checks_total` | counter | `result` (`ok`, `error`) | Vault checks. |
+| `permwatch_vault_used_percent` | gauge | `contract` | Share of the vault's limit withdrawn in the current period. |
 
 Alert on `permwatch_findings{severity="critical"} > 0` and on
 `time() - permwatch_last_success_timestamp_seconds > 300`.
@@ -177,6 +216,7 @@ Alert on `permwatch_findings{severity="critical"} > 0` and on
 - [0001 — Poll the account endpoint instead of indexing transactions](docs/adr/0001-poll-account-state.md)
 - [0002 — Snapshots in JSON files, not a database](docs/adr/0002-file-snapshots.md)
 - [0003 — Decode the operations bitmask locally, without the chain's protobuf types](docs/adr/0003-local-bitmask-decoding.md)
+- [0004 — Alert on vault level changes, with the level kept in memory](docs/adr/0004-vault-alert-levels-in-memory.md)
 
 ## Verified against testnet
 
@@ -189,11 +229,15 @@ from the live API.
 
 The same day the vault contract was deployed on testnet with a limit of 10 KLV per
 hour. `permwatch vault` reported 40% after a 4 KLV withdrawal and 100% (exit `2`)
-after 6 KLV more; the contract itself rejected a withdrawal over the limit.
+after 6 KLV more; the contract itself rejected a withdrawal over the limit. With
+`watch` started from a YAML file while the vault was at 100%, the webhook received
+one `vault_near_limit` alert carrying the label and owner, and none in the next
+seven checks. The step from the warning line to the limit is covered by unit
+tests, not by a testnet run. Telegram delivery is tested against a local HTTP
+server, not against the real Bot API.
 
 ## Roadmap
 
-1. Telegram notifier, like [chainwatch](https://github.com/Amadeus-22/chainwatch).
-2. Account lists from a YAML file with a label and an owner per account.
-3. Vault checks inside `watch`, with a metric and an alert, instead of only the
-   one-shot `vault` command.
+1. Persist the vault alert level, so a restart does not repeat an alert.
+2. A rule for owner permissions whose signers have never sent a transaction.
+3. KDA token vaults, when [klever-contracts](https://github.com/Amadeus-22/klever-contracts) supports them.

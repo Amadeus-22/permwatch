@@ -40,9 +40,6 @@ const (
 	exitFindings = 2 // audit: a critical or high finding; vault: the warning line was reached
 )
 
-// defaultNodeURL is a KleverChain mainnet node.
-const defaultNodeURL = "https://node.mainnet.klever.org"
-
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
@@ -136,7 +133,7 @@ func audit(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 func vault(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("vault", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	nodeURL := flags.String("node", defaultNodeURL, "KleverChain node base URL")
+	nodeURL := flags.String("node", config.DefaultNodeURL, "KleverChain node base URL")
 	warn := flags.Int("warn", 80, "warn when this percentage of the period's limit is used")
 	asJSON := flags.Bool("json", false, "print the reports as JSON")
 	timeout := flags.Duration("timeout", 10*time.Second, "timeout of each node request")
@@ -216,7 +213,7 @@ func printReport(w io.Writer, r app.Report) {
 }
 
 func watch(ctx context.Context, stderr io.Writer) error {
-	cfg, err := config.Load(os.Getenv)
+	cfg, err := config.Load(os.Getenv, os.ReadFile)
 	if err != nil {
 		return fmt.Errorf("configuration:\n%w", err)
 	}
@@ -230,22 +227,28 @@ func watch(ctx context.Context, stderr io.Writer) error {
 	if cfg.WebhookURL != "" {
 		notifiers = append(notifiers, notify.NewWebhook(cfg.WebhookURL, cfg.APITimeout))
 	}
+	if cfg.TelegramBotToken != "" {
+		notifiers = append(notifiers, notify.NewTelegram(notify.TelegramAPI, cfg.TelegramBotToken, cfg.TelegramChatID, cfg.APITimeout))
+	}
 
 	registry := prometheus.NewRegistry()
 	watcher := &app.Watcher{
-		Source:    kleverapi.New(cfg.APIURL, cfg.APITimeout),
-		Store:     store,
-		Notifier:  notifiers,
-		Observer:  metrics.New(registry),
-		Log:       logger,
-		Addresses: cfg.Addresses,
-		Interval:  cfg.PollInterval,
-		Now:       func() time.Time { return time.Now().UTC() },
+		Source:      kleverapi.New(cfg.APIURL, cfg.APITimeout),
+		VaultSource: klevernode.New(cfg.NodeURL, cfg.APITimeout),
+		Store:       store,
+		Notifier:    notifiers,
+		Observer:    metrics.New(registry),
+		Log:         logger,
+		Accounts:    cfg.Accounts,
+		Vaults:      cfg.Vaults,
+		Interval:    cfg.PollInterval,
+		Now:         func() time.Time { return time.Now().UTC() },
 	}
 	server := httpapi.NewServer(cfg.HTTPAddr, watcher, registry)
 
-	logger.Info("permwatch starting", "accounts", len(cfg.Addresses), "api_url", cfg.APIURL,
-		"poll_interval", cfg.PollInterval.String(), "http_addr", cfg.HTTPAddr, "webhook", cfg.WebhookURL != "")
+	logger.Info("permwatch starting", "accounts", len(cfg.Accounts), "vaults", len(cfg.Vaults),
+		"api_url", cfg.APIURL, "node_url", cfg.NodeURL, "poll_interval", cfg.PollInterval.String(),
+		"http_addr", cfg.HTTPAddr, "webhook", cfg.WebhookURL != "", "telegram", cfg.TelegramBotToken != "")
 
 	// Both goroutines are owned here: watch waits for them before returning.
 	ctx, cancelWatcher := context.WithCancel(ctx)
