@@ -1,0 +1,16 @@
+services:
+  permwatch:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    env_file: ../.env
+    environment:
+      PERMWATCH_STATE_DIR: /data
+    ports:
+      - "8080:8080"
+    volumes:
+      - permwatch-data:/data
+    restart: unless-stopped
+
+volumes:
+  permwatch-data:

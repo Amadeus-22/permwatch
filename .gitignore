@@ -1,0 +1,14 @@
+# build output
+/bin/
+
+# local runtime data
+/data/
+.env
+
+# keys never belong in this repository
+*.pem
+
+# editors / OS
+.idea/
+.vscode/
+.DS_Store
