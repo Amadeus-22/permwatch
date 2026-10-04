@@ -3,6 +3,7 @@
 //	permwatch audit [-api URL] [-json] <address>...
 //	permwatch vault [-node URL] [-warn N] [-json] <contract>...
 //	permwatch watch            (configured by PERMWATCH_* environment variables)
+//	permwatch version
 package main
 
 import (
@@ -33,6 +34,9 @@ import (
 	"github.com/Amadeus-22/permwatch/internal/platform/metrics"
 )
 
+// version is set at build time with -ldflags "-X main.version=...".
+var version = "dev"
+
 // Exit codes of `permwatch audit` and `permwatch vault`.
 const (
 	exitOK       = 0
@@ -57,6 +61,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return audit(ctx, args[1:], stdout, stderr)
 	case "vault":
 		return vault(ctx, args[1:], stdout, stderr)
+	case "version":
+		fmt.Fprintln(stdout, "permwatch", version)
+		return exitOK
 	case "watch":
 		if err := watch(ctx, stderr); err != nil {
 			fmt.Fprintln(stderr, "permwatch:", err)
@@ -74,6 +81,7 @@ func usage(w io.Writer) {
   permwatch audit [-api URL] [-json] <address>...   judge the permissions of accounts now
   permwatch vault [-node URL] [-warn N] [-json] <contract>...   how much of a limit vault's allowance is used
   permwatch watch                                   poll accounts and alert on changes (PERMWATCH_* env)
+  permwatch version                                 print the version
 `)
 }
 

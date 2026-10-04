@@ -73,6 +73,10 @@ modes are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Quick start
 
+Released binaries (Linux and macOS, amd64 and arm64) are on the
+[releases page](https://github.com/Amadeus-22/permwatch/releases); the container
+image is `ghcr.io/amadeus-22/permwatch`. Or build from source:
+
 ```bash
 make build
 
