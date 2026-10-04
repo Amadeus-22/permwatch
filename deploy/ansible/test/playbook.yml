@@ -1,0 +1,8 @@
+---
+- name: Deploy permwatch into the test container
+  hosts: all
+  gather_facts: true
+  vars:
+    permwatch_binary_src: "{{ playbook_dir }}/../../../bin/permwatch"
+  roles:
+    - permwatch

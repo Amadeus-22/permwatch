@@ -1,0 +1,28 @@
+---
+# Path on the control machine of the binary built with `make build`.
+permwatch_binary_src: "{{ playbook_dir }}/../../bin/permwatch"
+
+permwatch_user: permwatch
+permwatch_install_dir: /usr/local/bin
+permwatch_config_dir: /etc/permwatch
+permwatch_state_dir: /var/lib/permwatch
+
+permwatch_http_addr: "127.0.0.1:8080"
+permwatch_api_url: https://api.mainnet.klever.org
+permwatch_node_url: https://node.mainnet.klever.org
+permwatch_poll_interval: 1m
+permwatch_log_level: info
+
+# What to watch. Each account: address, and optionally label and owner.
+# Each vault: contract, and optionally label, owner and warn_percent.
+permwatch_accounts: []
+permwatch_vaults: []
+
+# Optional alert channels. Keep the Telegram token in Ansible Vault.
+permwatch_webhook_url: ""
+permwatch_telegram_bot_token: ""
+permwatch_telegram_chat_id: ""
+
+# How long to wait for /healthz after (re)starting the service.
+permwatch_health_retries: 15
+permwatch_health_delay: 2

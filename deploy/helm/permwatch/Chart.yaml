@@ -1,0 +1,9 @@
+apiVersion: v2
+name: permwatch
+description: Watches KleverChain account permissions and spending-limit vaults, and alerts when they change.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/Amadeus-22/permwatch
+sources:
+  - https://github.com/Amadeus-22/permwatch

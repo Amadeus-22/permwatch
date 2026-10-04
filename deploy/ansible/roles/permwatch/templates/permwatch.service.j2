@@ -1,0 +1,31 @@
+# Managed by Ansible. Changes made here are overwritten.
+[Unit]
+Description=permwatch - KleverChain permission and vault watcher
+Documentation=https://github.com/Amadeus-22/permwatch
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ permwatch_user }}
+Group={{ permwatch_user }}
+EnvironmentFile={{ permwatch_config_dir }}/permwatch.env
+ExecStart={{ permwatch_install_dir }}/permwatch watch
+Restart=on-failure
+RestartSec=5s
+
+# The service needs the network and its state directory, nothing else.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+CapabilityBoundingSet=
+ReadWritePaths={{ permwatch_state_dir }}
+
+[Install]
+WantedBy=multi-user.target

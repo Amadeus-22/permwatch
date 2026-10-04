@@ -134,6 +134,20 @@ and are never converted to floating point. The output above is from the first
 hour after the vault was deployed; the allowance resets every period.
 `vault` flags: `-node URL` (default mainnet), `-warn 80`, `-json`, `-timeout 10s`.
 
+## Deployment
+
+| How | Where | Checked by |
+|---|---|---|
+| Docker Compose | `deploy/docker-compose.yml` | — |
+| systemd, with Ansible | `deploy/ansible/`: a role that creates a service account, installs the binary, writes the watch list and an environment file readable only by the service group, and installs a hardened unit (`ProtectSystem=strict`, no capabilities). | `deploy/ansible/test/run.sh` runs it twice against a systemd container and fails unless the second run changes nothing and `/healthz` answers. |
+| Kubernetes, with Helm | `deploy/helm/permwatch/`: Deployment (one replica, `Recreate`, non-root, read-only root filesystem), ConfigMap for the watch list, Secret for alert channels, PVC for the snapshots, optional ServiceMonitor. | `deploy/helm/test.sh` installs it in a kind cluster and checks readiness and the API. |
+
+```bash
+make build
+ansible-playbook -i inventory.ini deploy/ansible/playbook.yml       # see deploy/ansible/*.example.*
+helm install permwatch deploy/helm/permwatch -f my-values.yaml      # see ci-values.yaml
+```
+
 ## Configuration
 
 `watch` is configured by environment variables, validated at startup; every

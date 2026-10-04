@@ -1,0 +1,87 @@
+---
+- name: Check that there is something to watch
+  ansible.builtin.assert:
+    that: (permwatch_accounts | length) + (permwatch_vaults | length) > 0
+    fail_msg: Set permwatch_accounts or permwatch_vaults.
+    quiet: true
+
+- name: Create the service account
+  ansible.builtin.user:
+    name: "{{ permwatch_user }}"
+    system: true
+    shell: /usr/sbin/nologin
+    home: "{{ permwatch_state_dir }}"
+    create_home: false
+
+- name: Create the configuration directory
+  ansible.builtin.file:
+    path: "{{ permwatch_config_dir }}"
+    state: directory
+    owner: root
+    group: "{{ permwatch_user }}"
+    mode: "0750"
+
+- name: Create the state directory
+  ansible.builtin.file:
+    path: "{{ permwatch_state_dir }}"
+    state: directory
+    owner: "{{ permwatch_user }}"
+    group: "{{ permwatch_user }}"
+    mode: "0700"
+
+- name: Install the binary
+  ansible.builtin.copy:
+    src: "{{ permwatch_binary_src }}"
+    dest: "{{ permwatch_install_dir }}/permwatch"
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Restart permwatch
+
+- name: Write the watch list
+  ansible.builtin.template:
+    src: watchlist.yaml.j2
+    dest: "{{ permwatch_config_dir }}/watchlist.yaml"
+    owner: root
+    group: "{{ permwatch_user }}"
+    mode: "0640"
+  notify: Restart permwatch
+
+- name: Write the environment file
+  ansible.builtin.template:
+    src: permwatch.env.j2
+    dest: "{{ permwatch_config_dir }}/permwatch.env"
+    owner: root
+    group: "{{ permwatch_user }}"
+    mode: "0640"
+  no_log: true  # holds the Telegram token and the webhook URL
+  notify: Restart permwatch
+
+- name: Install the systemd unit
+  ansible.builtin.template:
+    src: permwatch.service.j2
+    dest: /etc/systemd/system/permwatch.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart permwatch
+
+- name: Enable and start the service
+  ansible.builtin.systemd:
+    name: permwatch
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Apply pending restarts before checking health
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for the service to answer its health check
+  ansible.builtin.uri:
+    url: "http://{{ permwatch_http_addr }}/healthz"
+    status_code: 200
+  register: permwatch_health
+  retries: "{{ permwatch_health_retries }}"
+  delay: "{{ permwatch_health_delay }}"
+  until: permwatch_health.status == 200
+  changed_when: false

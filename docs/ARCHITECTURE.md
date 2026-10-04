@@ -47,6 +47,10 @@ flowchart LR
 | `internal/platform/backoff` | Jittered exponential delay. |
 | `internal/platform/logging` | JSON `slog` logger. |
 
+`deploy/` holds the Dockerfile and Compose file, an Ansible role for a systemd
+install (`deploy/ansible`) and a Helm chart (`deploy/helm/permwatch`), each with a
+test script that runs it for real.
+
 ## Failure modes
 
 | Failure | Behaviour |

@@ -1,0 +1,9 @@
+---
+# Installs permwatch as a hardened systemd service.
+#   make build
+#   ansible-playbook -i inventory.ini deploy/ansible/playbook.yml
+- name: Deploy permwatch
+  hosts: permwatch
+  become: true
+  roles:
+    - permwatch

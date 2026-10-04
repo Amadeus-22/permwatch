@@ -1,0 +1,62 @@
+image:
+  repository: ghcr.io/amadeus-22/permwatch
+  # Defaults to the chart's appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# What to watch. At least one account or vault is required.
+# Each account: address, and optionally label and owner.
+# Each vault: contract, and optionally label, owner and warn_percent (1-100).
+accounts: []
+vaults: []
+
+config:
+  apiUrl: https://api.mainnet.klever.org
+  nodeUrl: https://node.mainnet.klever.org
+  pollInterval: 1m
+  logLevel: info
+
+# Optional alert channels, stored in a Secret. To use a Secret you manage
+# yourself, set existingSecret to its name; it must hold the same keys
+# (PERMWATCH_WEBHOOK_URL, PERMWATCH_TELEGRAM_BOT_TOKEN, PERMWATCH_TELEGRAM_CHAT_ID).
+alerts:
+  webhookUrl: ""
+  telegramBotToken: ""
+  telegramChatId: ""
+  existingSecret: ""
+
+# permwatch keeps the last permissions seen per account on disk. Without a
+# volume a restarted pod records a new baseline and misses a change made while
+# it was down.
+persistence:
+  enabled: true
+  size: 100Mi
+  storageClass: ""
+  accessModes:
+    - ReadWriteOnce
+
+service:
+  type: ClusterIP
+  port: 8080
+
+serviceMonitor:
+  # Needs the Prometheus Operator CRDs.
+  enabled: false
+  interval: 30s
+  labels: {}
+
+resources:
+  requests:
+    cpu: 10m
+    memory: 32Mi
+  limits:
+    memory: 128Mi
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

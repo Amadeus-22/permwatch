@@ -1,0 +1,15 @@
+{{- if not (or .Values.accounts .Values.vaults) }}
+{{- fail "set accounts or vaults: permwatch needs at least one thing to watch" }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "permwatch.fullname" . }}
+  labels:
+    {{- include "permwatch.labels" . | nindent 4 }}
+data:
+  watchlist.yaml: |
+    accounts:
+      {{- toYaml .Values.accounts | nindent 6 }}
+    vaults:
+      {{- toYaml .Values.vaults | nindent 6 }}

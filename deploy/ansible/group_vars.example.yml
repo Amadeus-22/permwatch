@@ -1,0 +1,10 @@
+# Copy to group_vars/permwatch.yml next to your inventory.
+permwatch_accounts:
+  - address: klv1x4lhywvzqt4dhz92tps2a2jfrsn2qljz7c89njver2e6nmamkjhq62e787
+    label: demo treasury
+    owner: finance team
+permwatch_vaults:
+  - contract: klv1qqqqqqqqqqqqqpgqprrwnlul05prr753xm278kq6jexa0a523vqq5gvgsc
+    label: ops vault
+    owner: ops team
+    warn_percent: 80

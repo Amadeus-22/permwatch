@@ -1,0 +1,6 @@
+---
+- name: Restart permwatch
+  ansible.builtin.systemd:
+    name: permwatch
+    state: restarted
+    daemon_reload: true

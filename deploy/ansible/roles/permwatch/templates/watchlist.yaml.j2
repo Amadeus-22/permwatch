@@ -1,0 +1,28 @@
+# Managed by Ansible. Changes made here are overwritten.
+accounts:
+{% for account in permwatch_accounts %}
+  - address: {{ account.address }}
+{% if account.label is defined %}
+    label: {{ account.label | to_json }}
+{% endif %}
+{% if account.owner is defined %}
+    owner: {{ account.owner | to_json }}
+{% endif %}
+{% else %}
+  []
+{% endfor %}
+vaults:
+{% for vault in permwatch_vaults %}
+  - contract: {{ vault.contract }}
+{% if vault.label is defined %}
+    label: {{ vault.label | to_json }}
+{% endif %}
+{% if vault.owner is defined %}
+    owner: {{ vault.owner | to_json }}
+{% endif %}
+{% if vault.warn_percent is defined %}
+    warn_percent: {{ vault.warn_percent | int }}
+{% endif %}
+{% else %}
+  []
+{% endfor %}
