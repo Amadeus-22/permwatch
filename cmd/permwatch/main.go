@@ -1,6 +1,7 @@
 // Command permwatch audits and watches KleverChain account permissions.
 //
 //	permwatch audit [-api URL] [-json] <address>...
+//	permwatch vault [-node URL] [-warn N] [-json] <contract>...
 //	permwatch watch            (configured by PERMWATCH_* environment variables)
 package main
 
@@ -23,6 +24,7 @@ import (
 	"github.com/Amadeus-22/permwatch/internal/adapter/filestore"
 	"github.com/Amadeus-22/permwatch/internal/adapter/httpapi"
 	"github.com/Amadeus-22/permwatch/internal/adapter/kleverapi"
+	"github.com/Amadeus-22/permwatch/internal/adapter/klevernode"
 	"github.com/Amadeus-22/permwatch/internal/adapter/notify"
 	"github.com/Amadeus-22/permwatch/internal/app"
 	"github.com/Amadeus-22/permwatch/internal/domain"
@@ -31,12 +33,15 @@ import (
 	"github.com/Amadeus-22/permwatch/internal/platform/metrics"
 )
 
-// Exit codes of `permwatch audit`.
+// Exit codes of `permwatch audit` and `permwatch vault`.
 const (
 	exitOK       = 0
 	exitError    = 1
-	exitFindings = 2 // at least one critical or high finding
+	exitFindings = 2 // audit: a critical or high finding; vault: the warning line was reached
 )
+
+// defaultNodeURL is a KleverChain mainnet node.
+const defaultNodeURL = "https://node.mainnet.klever.org"
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -53,6 +58,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "audit":
 		return audit(ctx, args[1:], stdout, stderr)
+	case "vault":
+		return vault(ctx, args[1:], stdout, stderr)
 	case "watch":
 		if err := watch(ctx, stderr); err != nil {
 			fmt.Fprintln(stderr, "permwatch:", err)
@@ -68,6 +75,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 func usage(w io.Writer) {
 	fmt.Fprint(w, `usage:
   permwatch audit [-api URL] [-json] <address>...   judge the permissions of accounts now
+  permwatch vault [-node URL] [-warn N] [-json] <contract>...   how much of a limit vault's allowance is used
   permwatch watch                                   poll accounts and alert on changes (PERMWATCH_* env)
 `)
 }
@@ -123,6 +131,61 @@ func audit(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	return exitOK
+}
+
+func vault(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("vault", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	nodeURL := flags.String("node", defaultNodeURL, "KleverChain node base URL")
+	warn := flags.Int("warn", 80, "warn when this percentage of the period's limit is used")
+	asJSON := flags.Bool("json", false, "print the reports as JSON")
+	timeout := flags.Duration("timeout", 10*time.Second, "timeout of each node request")
+	if err := flags.Parse(args); err != nil {
+		return exitError
+	}
+	if flags.NArg() == 0 || *warn < 1 || *warn > 100 {
+		usage(stderr)
+		return exitError
+	}
+
+	source := klevernode.New(*nodeURL, *timeout)
+	var reports []app.VaultReport
+	for _, raw := range flags.Args() {
+		contract, err := domain.ParseAddress(raw)
+		if err != nil {
+			fmt.Fprintln(stderr, "permwatch:", err)
+			return exitError
+		}
+		report, err := app.CheckVault(ctx, source, contract, *warn, time.Now().UTC())
+		if err != nil {
+			fmt.Fprintln(stderr, "permwatch:", err)
+			return exitError
+		}
+		reports = append(reports, report)
+	}
+
+	code := exitOK
+	if *asJSON {
+		encoder := json.NewEncoder(stdout)
+		encoder.SetIndent("", "  ")
+		if err := encoder.Encode(map[string]any{"vaults": reports}); err != nil {
+			fmt.Fprintln(stderr, "permwatch:", err)
+			return exitError
+		}
+	}
+	for _, r := range reports {
+		if !*asJSON {
+			fmt.Fprintf(stdout, "%s\n  limit %s  spent %s  remaining %s  used %d%%\n",
+				r.Status.Contract, r.Status.Limit, r.Status.Spent, r.Status.Remaining, r.UsedPercent)
+			for _, w := range r.Warnings {
+				fmt.Fprintf(stdout, "  [%s] %s: %s\n", w.Severity, w.Rule, w.Message)
+			}
+		}
+		if len(r.Warnings) > 0 {
+			code = exitFindings
+		}
+	}
+	return code
 }
 
 func printReport(w io.Writer, r app.Report) {

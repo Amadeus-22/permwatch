@@ -11,7 +11,8 @@ statement.
 ## Scope
 
 In: reading permissions from the public API, risk rules, change detection,
-alerting by log and webhook, a read-only HTTP API, Prometheus metrics.
+alerting by log and webhook, a read-only HTTP API, Prometheus metrics, and a
+one-shot check of spending-limit vault contracts.
 
 Out: signing or sending transactions, holding keys, indexing transaction history,
 watching balances.
@@ -33,10 +34,11 @@ flowchart LR
 
 | Package | Responsibility |
 |---|---|
-| `cmd/permwatch` | Wiring only: flags, config, dependencies, start, shutdown. Subcommands `audit` and `watch`. |
-| `internal/domain` | `Address`, `Permission`, `Operations` bitmask, `Assess` (risk rules), `Diff` (changes). No I/O. |
-| `internal/app` | `Audit` use case, `Watcher` loop, and the ports `AccountSource`, `SnapshotStore`, `Notifier`, `Observer`. |
+| `cmd/permwatch` | Wiring only: flags, config, dependencies, start, shutdown. Subcommands `audit`, `vault` and `watch`. |
+| `internal/domain` | `Address`, `Permission`, `Operations` bitmask, `Assess` (risk rules), `Diff` (changes), `VaultStatus` (exact spending arithmetic). No I/O. |
+| `internal/app` | `Audit` and `CheckVault` use cases, `Watcher` loop, and the ports `AccountSource`, `VaultSource`, `SnapshotStore`, `Notifier`, `Observer`. |
 | `internal/adapter/kleverapi` | `AccountSource` over `GET /v1.0/address/{addr}`: timeout, bounded jittered retries. |
+| `internal/adapter/klevernode` | `VaultSource` over the node's `POST /vm/int`: reads the views of a limit vault contract. |
 | `internal/adapter/filestore` | `SnapshotStore`: one JSON file per account, replaced atomically. |
 | `internal/adapter/notify` | `Notifier`s: structured log, webhook, and `Multi` to fan out. |
 | `internal/adapter/httpapi` | `/v1/accounts`, `/healthz`, `/readyz`, `/metrics`. |

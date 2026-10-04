@@ -25,6 +25,28 @@ type Notifier interface {
 	Notify(ctx context.Context, alert Alert) error
 }
 
+// VaultSource reads the spending state of a limit vault contract.
+type VaultSource interface {
+	VaultStatus(ctx context.Context, contract domain.Address) (domain.VaultStatus, error)
+}
+
+// VaultReport is the result of checking one vault.
+type VaultReport struct {
+	Status      domain.VaultStatus    `json:"status"`
+	UsedPercent int                   `json:"used_percent"`
+	Warnings    []domain.VaultWarning `json:"warnings"`
+	CheckedAt   time.Time             `json:"checked_at"`
+}
+
+// CheckVault reads a vault and reports whether its spending is near the limit.
+func CheckVault(ctx context.Context, src VaultSource, contract domain.Address, warnPercent int, now time.Time) (VaultReport, error) {
+	status, err := src.VaultStatus(ctx, contract)
+	if err != nil {
+		return VaultReport{}, err
+	}
+	return VaultReport{Status: status, UsedPercent: status.UsedPercent(), Warnings: status.Warnings(warnPercent), CheckedAt: now}, nil
+}
+
 // Report is the result of auditing one account.
 type Report struct {
 	Account   domain.Account   `json:"account"`
