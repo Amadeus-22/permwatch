@@ -37,18 +37,7 @@ func New(baseURL string, timeout time.Duration) *Client {
 		HTTP:    &http.Client{Timeout: timeout},
 		Retries: 3,
 		Backoff: backoff.Policy{Base: 500 * time.Millisecond, Max: 5 * time.Second},
-		Sleep:   sleep,
-	}
-}
-
-func sleep(ctx context.Context, d time.Duration) error {
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
+		Sleep:   backoff.Sleep,
 	}
 }
 
@@ -76,31 +65,15 @@ type apiPermission struct {
 	} `json:"signers"`
 }
 
-// retryable marks an error worth another attempt.
-type retryable struct{ err error }
-
-func (r retryable) Error() string { return r.err.Error() }
-func (r retryable) Unwrap() error { return r.err }
-
 // Account fetches the account and its permissions.
 func (c *Client) Account(ctx context.Context, addr domain.Address) (domain.Account, error) {
-	var lastErr error
-	for attempt := 0; attempt <= c.Retries; attempt++ {
-		if attempt > 0 {
-			if err := c.Sleep(ctx, c.Backoff.Delay(attempt)); err != nil {
-				return domain.Account{}, fmt.Errorf("fetch account %s: %w", addr, err)
-			}
-		}
-		account, err := c.fetch(ctx, addr)
-		if err == nil {
-			return account, nil
-		}
-		lastErr = err
-		if _, again := err.(retryable); !again {
-			break
-		}
+	account, err := backoff.Do(ctx, c.Backoff, c.Retries, c.Sleep, func(ctx context.Context) (domain.Account, error) {
+		return c.fetch(ctx, addr)
+	})
+	if err != nil {
+		return domain.Account{}, fmt.Errorf("fetch account %s: %w", addr, err)
 	}
-	return domain.Account{}, fmt.Errorf("fetch account %s: %w", addr, lastErr)
+	return account, nil
 }
 
 func (c *Client) fetch(ctx context.Context, addr domain.Address) (domain.Account, error) {
@@ -115,20 +88,20 @@ func (c *Client) fetch(ctx context.Context, addr domain.Address) (domain.Account
 		if ctx.Err() != nil {
 			return domain.Account{}, ctx.Err()
 		}
-		return domain.Account{}, retryable{err}
+		return domain.Account{}, backoff.Retryable(err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBody))
 	if err != nil {
-		return domain.Account{}, retryable{fmt.Errorf("read response: %w", err)}
+		return domain.Account{}, backoff.Retryable(fmt.Errorf("read response: %w", err))
 	}
 
 	switch {
 	case resp.StatusCode == http.StatusNotFound:
 		return domain.Account{}, domain.ErrAccountNotFound
 	case resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500:
-		return domain.Account{}, retryable{fmt.Errorf("api status %d", resp.StatusCode)}
+		return domain.Account{}, backoff.Retryable(fmt.Errorf("api status %d", resp.StatusCode))
 	case resp.StatusCode != http.StatusOK:
 		return domain.Account{}, fmt.Errorf("api status %d: %s", resp.StatusCode, apiError(body))
 	}

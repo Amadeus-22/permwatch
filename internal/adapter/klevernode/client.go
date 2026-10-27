@@ -35,23 +35,9 @@ func New(baseURL string, timeout time.Duration) *Client {
 		HTTP:    &http.Client{Timeout: timeout},
 		Retries: 3,
 		Backoff: backoff.Policy{Base: 500 * time.Millisecond, Max: 5 * time.Second},
-		Sleep: func(ctx context.Context, d time.Duration) error {
-			timer := time.NewTimer(d)
-			defer timer.Stop()
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-timer.C:
-				return nil
-			}
-		},
+		Sleep:   backoff.Sleep,
 	}
 }
-
-type retryable struct{ err error }
-
-func (r retryable) Error() string { return r.err.Error() }
-func (r retryable) Unwrap() error { return r.err }
 
 // VaultStatus reads the limit, the amount spent and the amount remaining in the
 // current period from a limit vault contract.
@@ -76,23 +62,9 @@ func (c *Client) VaultStatus(ctx context.Context, contract domain.Address) (doma
 }
 
 func (c *Client) queryInt(ctx context.Context, contract domain.Address, view string) (*big.Int, error) {
-	var lastErr error
-	for attempt := 0; attempt <= c.Retries; attempt++ {
-		if attempt > 0 {
-			if err := c.Sleep(ctx, c.Backoff.Delay(attempt)); err != nil {
-				return nil, err
-			}
-		}
-		value, err := c.queryIntOnce(ctx, contract, view)
-		if err == nil {
-			return value, nil
-		}
-		lastErr = err
-		if _, again := err.(retryable); !again {
-			break
-		}
-	}
-	return nil, lastErr
+	return backoff.Do(ctx, c.Backoff, c.Retries, c.Sleep, func(ctx context.Context) (*big.Int, error) {
+		return c.queryIntOnce(ctx, contract, view)
+	})
 }
 
 func (c *Client) queryIntOnce(ctx context.Context, contract domain.Address, view string) (*big.Int, error) {
@@ -111,15 +83,15 @@ func (c *Client) queryIntOnce(ctx context.Context, contract domain.Address, view
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		return nil, retryable{err}
+		return nil, backoff.Retryable(err)
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBody))
 	if err != nil {
-		return nil, retryable{fmt.Errorf("read response: %w", err)}
+		return nil, backoff.Retryable(fmt.Errorf("read response: %w", err))
 	}
 	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
-		return nil, retryable{fmt.Errorf("node status %d", resp.StatusCode)}
+		return nil, backoff.Retryable(fmt.Errorf("node status %d", resp.StatusCode))
 	}
 
 	var decoded struct {
